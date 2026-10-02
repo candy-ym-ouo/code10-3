@@ -5,7 +5,13 @@ import { apiFetch, ApiError } from "../api/client.js";
 import EmptyState from "../components/EmptyState.vue";
 import LoadingBlock from "../components/LoadingBlock.vue";
 import StatusBadge from "../components/StatusBadge.vue";
-import { formatDateTime, formatDuration, sessionStatusLabels } from "../utils/format.js";
+import {
+  annotationLabels,
+  formatDateTime,
+  formatDuration,
+  goalStatusLabels,
+  sessionStatusLabels,
+} from "../utils/format.js";
 
 interface SessionRow {
   id: string;
@@ -21,11 +27,24 @@ interface SessionRow {
 }
 interface SessionPage { data: SessionRow[]; nextCursor: string | null }
 
-const filters = reactive({ q: "", instrument: "", status: "COMPLETED", sortBy: "startedAt", sortOrder: "desc" });
+const filters = reactive({
+  q: "",
+  instrument: "",
+  status: "COMPLETED",
+  annotationType: "",
+  goalStatus: "",
+  sortBy: "startedAt",
+  sortOrder: "desc",
+});
 const data = ref<SessionPage>({ data: [], nextCursor: null });
 const loading = ref(true);
 const error = ref("");
-const cursors: string[] = [];
+// 每页游标栈：栈底永远是第一页（undefined），保证“上一页”能逐页退回且不重项
+const cursors: Array<string | undefined> = [];
+// 本次筛选条件下已见过的练习 ID：归档等操作会刷新排序值，个别行可能重新落到当前页，
+// 向前翻页时直接丢弃，保证跨页不重复也不跳项
+const seenIds = new Set<string>();
+const currentCursor = () => cursors.at(-1);
 
 async function load(cursor?: string): Promise<void> {
   loading.value = true;
@@ -34,8 +53,21 @@ async function load(cursor?: string): Promise<void> {
     const params = new URLSearchParams();
     Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
     if (cursor) params.set("cursor", cursor);
-    data.value = await apiFetch<SessionPage>(`/api/v1/sessions?${params.toString()}`);
+    const page = await apiFetch<SessionPage>(`/api/v1/sessions?${params.toString()}`);
+    if (cursor) {
+      page.data = page.data.filter((session) => !seenIds.has(session.id));
+    } else {
+      seenIds.clear();
+    }
+    page.data.forEach((session) => seenIds.add(session.id));
+    data.value = page;
   } catch (reason) {
+    // 游标失效（换了筛选条件、锚点被删除等）：回到第一页重新取数，不把用户卡在错误页
+    if (reason instanceof ApiError && reason.code === "CURSOR_INVALID" && cursor) {
+      cursors.length = 0;
+      await load();
+      return;
+    }
     error.value = reason instanceof ApiError ? reason.message : "练习列表加载失败";
   } finally {
     loading.value = false;
@@ -47,15 +79,21 @@ async function nextPage(): Promise<void> {
   await load(data.value.nextCursor);
 }
 async function previousPage(): Promise<void> {
+  if (!cursors.length) return;
   cursors.pop();
-  await load(cursors.at(-1));
+  await load(currentCursor());
 }
 async function archive(session: SessionRow): Promise<void> {
   if (!window.confirm(`确认归档“${session.title}”？归档后默认不再出现在历史列表中。`)) return;
   await apiFetch(`/api/v1/sessions/${session.id}/archive`, { method: "POST", body: "{}" });
+  // 归档会改变结果集总数，清空游标栈停留在当前条件第一页，避免旧游标导致跳项
+  cursors.length = 0;
   await load();
 }
-watch(() => [filters.q, filters.instrument, filters.status, filters.sortBy, filters.sortOrder], () => { cursors.length = 0; void load(); });
+watch(
+  () => [filters.q, filters.instrument, filters.status, filters.annotationType, filters.goalStatus, filters.sortBy, filters.sortOrder],
+  () => { cursors.length = 0; void load(); },
+);
 onMounted(() => load());
 </script>
 
@@ -72,9 +110,17 @@ onMounted(() => load());
       </button>
     </div>
 
-    <form class="card filters" @submit.prevent="load()">
+    <form class="card filters" @submit.prevent="cursors.length = 0; load()">
       <input v-model="filters.q" placeholder="搜索标题、曲目、乐器或备注" aria-label="搜索练习" />
       <input v-model="filters.instrument" placeholder="乐器" aria-label="按乐器筛选" />
+      <select v-model="filters.annotationType" aria-label="按问题类型筛选">
+        <option value="">全部问题类型</option>
+        <option v-for="(label, value) in annotationLabels" :key="value" :value="value">{{ label }}</option>
+      </select>
+      <select v-model="filters.goalStatus" aria-label="按目标状态筛选">
+        <option value="">全部目标状态</option>
+        <option v-for="(label, value) in goalStatusLabels" :key="value" :value="value">{{ label }}</option>
+      </select>
       <select v-model="filters.sortBy" aria-label="排序字段">
         <option value="startedAt">开始时间</option><option value="actualDurationMs">练习时长</option><option value="annotationCount">问题数量</option><option value="updatedAt">更新时间</option>
       </select>
@@ -83,7 +129,7 @@ onMounted(() => load());
     </form>
 
     <LoadingBlock v-if="loading" />
-    <div v-else-if="error" class="alert">{{ error }} <button class="button small ghost" @click="load()">重试</button></div>
+    <div v-else-if="error" class="alert">{{ error }} <button class="button small ghost" @click="load(currentCursor())">重试</button></div>
     <EmptyState v-else-if="!data.data.length" title="没有符合条件的练习" description="调整筛选条件，或开始一次新的练习。" action-label="开始新练习" @action="$router.push('/sessions/new')" />
     <div v-else class="card" style="margin-top: 18px">
       <div class="table-wrap">
@@ -113,6 +159,7 @@ onMounted(() => load());
 </template>
 
 <style scoped>
-.filters { display: grid; grid-template-columns: minmax(220px, 2fr) 1fr auto auto auto; gap: 10px; margin-bottom: 18px; }
-@media (max-width: 760px) { .filters { grid-template-columns: 1fr; } }
+.filters { display: grid; grid-template-columns: minmax(200px, 2fr) repeat(4, minmax(130px, 1fr)) auto auto; gap: 10px; margin-bottom: 18px; }
+@media (max-width: 980px) { .filters { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 620px) { .filters { grid-template-columns: 1fr; } }
 </style>

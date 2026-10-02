@@ -1,4 +1,4 @@
-import { Prisma, SessionStatus } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import {
   calculateSessionDuration,
   describeMissingReview,
@@ -9,6 +9,7 @@ import type { completionSchema, sessionListQuerySchema } from "@practice/contrac
 import { AppError, notFound } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
 import { enqueueCleanup } from "../lib/queue.js";
+import { listSessionPage } from "./session-list.js";
 
 export const sessionInclude = {
   mediaAssets: {
@@ -54,52 +55,7 @@ export async function getSessionForUser(userId: string, sessionId: string) {
 }
 
 export async function listSessions(userId: string, query: z.infer<typeof sessionListQuerySchema>) {
-  const where: Prisma.PracticeSessionWhereInput = {
-    userId,
-    ...(query.status !== "ALL" ? { status: query.status as SessionStatus } : {}),
-    ...(query.instrument ? { instrument: { equals: query.instrument, mode: "insensitive" } } : {}),
-    ...(query.from || query.to
-      ? {
-          startedAt: {
-            ...(query.from ? { gte: query.from } : {}),
-            ...(query.to ? { lte: query.to } : {}),
-          },
-        }
-      : {}),
-    ...(query.q
-      ? {
-          OR: [
-            { title: { contains: query.q, mode: "insensitive" } },
-            { instrument: { contains: query.q, mode: "insensitive" } },
-            { focus: { contains: query.q, mode: "insensitive" } },
-            { notes: { contains: query.q, mode: "insensitive" } },
-          ],
-        }
-      : {}),
-    ...(query.annotationType ? { annotations: { some: { type: query.annotationType } } } : {}),
-    ...(query.goalStatus ? { goals: { some: { status: query.goalStatus } } } : {}),
-  };
-
-  const orderBy: Prisma.PracticeSessionOrderByWithRelationInput =
-    query.sortBy === "annotationCount"
-      ? { annotations: { _count: query.sortOrder } }
-      : { [query.sortBy]: query.sortOrder };
-
-  const rows = await prisma.practiceSession.findMany({
-    where,
-    take: query.limit + 1,
-    ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
-    orderBy: [orderBy, { id: "asc" }],
-    include: {
-      _count: { select: { mediaAssets: true, annotations: true, goals: true } },
-      goals: { select: { id: true, title: true, status: true, dueDate: true } },
-      annotations: { select: { type: true, severity: true } },
-    },
-  });
-
-  const hasMore = rows.length > query.limit;
-  const data = hasMore ? rows.slice(0, query.limit) : rows;
-  return { data, nextCursor: hasMore ? data.at(-1)?.id ?? null : null };
+  return listSessionPage(userId, query);
 }
 
 export async function startReview(userId: string, sessionId: string) {

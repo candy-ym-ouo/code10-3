@@ -87,6 +87,9 @@ export const sessionUpdateSchema = sessionCreateSchema
 export const sessionBatchSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(100),
 });
+// 游标为服务端签发的不透明 token（base64url JSON），内含排序值快照与筛选指纹，
+// 客户端只能原样回传，不能自行构造。
+export const cursorTokenSchema = z.string().min(1).max(512).regex(/^[A-Za-z0-9_-]+$/);
 export const sessionListQuerySchema = z.object({
   q: z.string().trim().max(200).optional(),
   status: z.enum([...SESSION_STATUSES, "ALL"]).default("COMPLETED"),
@@ -97,7 +100,7 @@ export const sessionListQuerySchema = z.object({
   to: z.coerce.date().optional(),
   sortBy: z.enum(["startedAt", "actualDurationMs", "annotationCount", "updatedAt"]).default("startedAt"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
-  cursor: z.string().uuid().optional(),
+  cursor: cursorTokenSchema.optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 

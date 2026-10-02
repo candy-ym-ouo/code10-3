@@ -63,6 +63,34 @@ Refresh Cookie 路径为 `/api/v1/auth`，生产环境在 HTTPS 下自动使用 
 }
 ```
 
+### `GET /sessions` 查询参数
+
+所有筛选条件同时生效（AND）；`q` 内部对标题/乐器/重点/备注做 OR 匹配。
+
+| 参数 | 说明 |
+|---|---|
+| `q` | 标题、乐器、重点、备注模糊搜索 |
+| `status` | `DRAFT` / `IN_REVIEW` / `COMPLETED`（默认）/ `ARCHIVED` / `DELETING` / `DELETE_FAILED` / `ALL` |
+| `instrument` | 乐器精确筛选（大小写不敏感） |
+| `annotationType` | 问题类型：`RHYTHM` / `FINGERING` / `EMOTION`，只返回含该类型标记的练习 |
+| `goalStatus` | 目标状态：`OPEN` / `IN_PROGRESS` / `ACHIEVED` / `MISSED` / `CANCELLED`，只返回含该状态目标的练习 |
+| `from` / `to` | 按开始时间过滤（ISO 8601，含边界） |
+| `sortBy` | `startedAt`（默认）/ `actualDurationMs` / `annotationCount` / `updatedAt` |
+| `sortOrder` | `desc`（默认）/ `asc`；同值时按 `id` 升序兜底，保证顺序确定 |
+| `limit` | 每页 1–100，默认 20 |
+| `cursor` | 上一页响应中的 `nextCursor`，原样回传 |
+
+分页响应：
+
+```json
+{ "data": [ { "id": "…" } ], "nextCursor": "base64url-token 或 null" }
+```
+
+`nextCursor` 是不透明游标，内含排序值快照与当前筛选/排序指纹：
+
+- 翻页期间归档或删除练习导致总数变化，未浏览的条目不会被跳过，已浏览条目不会重复。
+- 改了任一筛选条件、排序或游标锚点已被删除时返回 `400 CURSOR_INVALID`，客户端应丢弃游标并回到第一页。
+
 ## 音频上传
 
 | 方法 | 路径 | 说明 |
