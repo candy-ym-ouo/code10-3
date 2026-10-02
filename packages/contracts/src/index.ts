@@ -87,6 +87,10 @@ export const sessionUpdateSchema = sessionCreateSchema
 export const sessionBatchSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(100),
 });
+export const sessionSortByValues = ["startedAt", "actualDurationMs", "annotationCount", "updatedAt"] as const;
+export type SessionSortBy = (typeof sessionSortByValues)[number];
+export type SessionSortOrder = "asc" | "desc";
+
 export const sessionListQuerySchema = z.object({
   q: z.string().trim().max(200).optional(),
   status: z.enum([...SESSION_STATUSES, "ALL"]).default("COMPLETED"),
@@ -95,11 +99,13 @@ export const sessionListQuerySchema = z.object({
   goalStatus: z.enum(GOAL_STATUSES).optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
-  sortBy: z.enum(["startedAt", "actualDurationMs", "annotationCount", "updatedAt"]).default("startedAt"),
+  sortBy: z.enum(sessionSortByValues).default("startedAt"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
-  cursor: z.string().uuid().optional(),
+  // 不透明复合游标：base64url(JSON)，由服务端签发与解析，客户端只能原样回传
+  cursor: z.string().trim().max(400).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
+export type SessionListQuery = z.infer<typeof sessionListQuerySchema>;
 
 const annotationCreateBaseSchema = z.object({
   mediaId: z.string().uuid(),

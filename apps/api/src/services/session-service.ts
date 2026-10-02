@@ -2,13 +2,16 @@ import { Prisma, SessionStatus } from "@prisma/client";
 import {
   calculateSessionDuration,
   describeMissingReview,
+  type SessionSortBy,
+  type SessionSortOrder,
   type SessionStatus as ContractSessionStatus,
 } from "@practice/contracts";
 import type { z } from "zod";
-import type { completionSchema, sessionListQuerySchema } from "@practice/contracts";
+import type { SessionListQuery, completionSchema } from "@practice/contracts";
 import { AppError, notFound } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
 import { enqueueCleanup } from "../lib/queue.js";
+import { buildSessionKeysetWhere, encodeSessionCursor } from "./session-cursor.js";
 
 export const sessionInclude = {
   mediaAssets: {
@@ -53,8 +56,10 @@ export async function getSessionForUser(userId: string, sessionId: string) {
   return session;
 }
 
-export async function listSessions(userId: string, query: z.infer<typeof sessionListQuerySchema>) {
-  const where: Prisma.PracticeSessionWhereInput = {
+export async function listSessions(userId: string, query: SessionListQuery) {
+  // 组合筛选（AND 语义）：问题类型与目标状态走关系存在性过滤，
+  // 乐器走大小写不敏感精确匹配；三者可同时生效。
+  const filterWhere: Prisma.PracticeSessionWhereInput = {
     userId,
     ...(query.status !== "ALL" ? { status: query.status as SessionStatus } : {}),
     ...(query.instrument ? { instrument: { equals: query.instrument, mode: "insensitive" } } : {}),
@@ -80,16 +85,29 @@ export async function listSessions(userId: string, query: z.infer<typeof session
     ...(query.goalStatus ? { goals: { some: { status: query.goalStatus } } } : {}),
   };
 
-  const orderBy: Prisma.PracticeSessionOrderByWithRelationInput =
-    query.sortBy === "annotationCount"
-      ? { annotations: { _count: query.sortOrder } }
-      : { [query.sortBy]: query.sortOrder };
+  const sortBy = query.sortBy as SessionSortBy;
+  const sortOrder = query.sortOrder as SessionSortOrder;
+
+  let keysetWhere: ReturnType<typeof buildSessionKeysetWhere>;
+  try {
+    keysetWhere = query.cursor ? buildSessionKeysetWhere(sortBy, sortOrder, query.cursor) : {};
+  } catch (error) {
+    if (error instanceof Error && error.name === "InvalidCursorError") {
+      throw new AppError(400, "INVALID_CURSOR", "分页游标无效，请回到第一页后重试");
+    }
+    throw error;
+  }
+
+  // 复合排序：主排序值 + id 唯一决胜，保证顺序全序、跨页不重不漏。
+  const orderBy: Prisma.PracticeSessionOrderByWithRelationInput[] =
+    sortBy === "annotationCount"
+      ? [{ annotations: { _count: sortOrder } }, { id: sortOrder }]
+      : [{ [sortBy]: sortOrder }, { id: sortOrder }];
 
   const rows = await prisma.practiceSession.findMany({
-    where,
+    where: { AND: [filterWhere, keysetWhere] },
     take: query.limit + 1,
-    ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
-    orderBy: [orderBy, { id: "asc" }],
+    orderBy,
     include: {
       _count: { select: { mediaAssets: true, annotations: true, goals: true } },
       goals: { select: { id: true, title: true, status: true, dueDate: true } },
@@ -99,7 +117,23 @@ export async function listSessions(userId: string, query: z.infer<typeof session
 
   const hasMore = rows.length > query.limit;
   const data = hasMore ? rows.slice(0, query.limit) : rows;
-  return { data, nextCursor: hasMore ? data.at(-1)?.id ?? null : null };
+  const last = data.at(-1);
+  const nextCursor =
+    hasMore && last
+      ? encodeSessionCursor({
+          sortBy,
+          sortValue:
+            sortBy === "annotationCount"
+              ? last._count.annotations
+              : sortBy === "actualDurationMs"
+                ? last.actualDurationMs
+                : sortBy === "updatedAt"
+                  ? last.updatedAt
+                  : last.startedAt,
+          id: last.id,
+        })
+      : null;
+  return { data, nextCursor };
 }
 
 export async function startReview(userId: string, sessionId: string) {

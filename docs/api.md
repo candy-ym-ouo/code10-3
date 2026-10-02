@@ -63,6 +63,25 @@ Refresh Cookie 路径为 `/api/v1/auth`，生产环境在 HTTPS 下自动使用 
 }
 ```
 
+`GET /sessions` 查询参数（除 `q` 外均为 AND 组合筛选，可同时生效）：
+
+| 参数 | 说明 |
+|---|---|
+| `status` | 练习状态，默认 `COMPLETED`，传 `ALL` 不限 |
+| `instrument` | 乐器，大小写不敏感精确匹配 |
+| `annotationType` | 问题类型（`RHYTHM` / `FINGERING` / `EMOTION`），仅返回含该类标记的练习 |
+| `goalStatus` | 目标状态（`OPEN` / `IN_PROGRESS` / `ACHIEVED` / `MISSED` / `CANCELLED`），仅返回含该状态目标的练习 |
+| `q` | 在标题、乐器、重点、备注中模糊搜索 |
+| `from` / `to` | 按开始时间范围过滤 |
+| `sortBy` | `startedAt`（默认）/ `actualDurationMs` / `annotationCount` / `updatedAt` |
+| `sortOrder` | `desc`（默认）/ `asc` |
+| `limit` | 每页条数，1-100，默认 20 |
+| `cursor` | 上一页返回的不透明分页令牌，原样回传即可 |
+
+响应为 `{ data, nextCursor }`。游标是包含 `(排序值, id)` 的 base64url 复合令牌：排序固定为“主排序值 + id”全序，
+跨页期间即使练习被归档/删除（总数变化）或排序值更新，也不会跳项或重复；游标损坏或与当前排序不匹配时返回
+`400 INVALID_CURSOR`，客户端应丢弃游标从第一页重新加载。
+
 ## 音频上传
 
 | 方法 | 路径 | 说明 |
